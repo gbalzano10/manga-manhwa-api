@@ -1,18 +1,36 @@
 from flask import Flask, jsonify
 from flask_cors import CORS
 import requests
+import time
 
 app = Flask(__name__)
-CORS(app)  # abilita CORS per tutte le origini
+CORS(app)
 
 ANILIST_URL = "https://graphql.anilist.co"
+
+# Cache in memoria per i manga
+_manga_cache = {
+    "data": None,
+    "timestamp": 0
+}
+CACHE_TTL_SECONDS = 600  # 10 minuti
 
 
 def fetch_latest_manga(limit: int = 6):
     """
     Prende alcuni manga 'aggiornati di recente' da AniList
-    e li converte nel formato che usa la tua WebApp.
+    con una cache per non superare i limiti.
     """
+
+    now = time.time()
+
+    # Se ho dati in cache freschi, li uso
+    if (
+        _manga_cache["data"] is not None
+        and (now - _manga_cache["timestamp"]) < CACHE_TTL_SECONDS
+    ):
+        return _manga_cache["data"]
+
     query = """
     query ($page: Int, $perPage: Int) {
       Page(page: $page, perPage: $perPage) {
@@ -42,50 +60,69 @@ def fetch_latest_manga(limit: int = 6):
         "perPage": limit
     }
 
-    resp = requests.post(
-        ANILIST_URL,
-        json={"query": query, "variables": variables},
-        timeout=10,
-    )
-    resp.raise_for_status()
-    json_data = resp.json()
-
-    media_list = json_data["data"]["Page"]["media"]
-
-    results = []
-    for m in media_list:
-        title_info = m.get("title") or {}
-        title = (
-            title_info.get("romaji")
-            or title_info.get("english")
-            or title_info.get("native")
-            or "Senza titolo"
+    try:
+        resp = requests.post(
+            ANILIST_URL,
+            json={"query": query, "variables": variables},
+            timeout=10,
         )
+        resp.raise_for_status()
+        json_data = resp.json()
+        media_list = json_data["data"]["Page"]["media"]
 
-        chapters = m.get("chapters")
-        if chapters:
-            chapter_label = f"Cap. {chapters}"
-        else:
-            chapter_label = "Capitoli in corso"
+        results = []
+        for m in media_list:
+            title_info = m.get("title") or {}
+            title = (
+                title_info.get("romaji")
+                or title_info.get("english")
+                or title_info.get("native")
+                or "Senza titolo"
+            )
 
-        cover = (m.get("coverImage") or {}).get("large") or \
-            "https://via.placeholder.com/150x220?text=Manga"
+            chapters = m.get("chapters")
+            if chapters:
+                chapter_label = f"Cap. {chapters}"
+            else:
+                chapter_label = "Capitoli in corso"
 
-        results.append({
-            "title": title,
-            "chapter": chapter_label,
-            "cover": cover,
-            "date": "Aggiornato di recente",
-            # se vorrai, potrai usarlo nella card come link
-            "url": m.get("siteUrl")
-        })
+            cover = (m.get("coverImage") or {}).get("large") or \
+                "https://via.placeholder.com/150x220?text=Manga"
 
-    return results
+            results.append({
+                "title": title,
+                "chapter": chapter_label,
+                "cover": cover,
+                "date": "Aggiornato di recente",
+                "url": m.get("siteUrl")
+            })
+
+        # aggiorno cache
+        _manga_cache["data"] = results
+        _manga_cache["timestamp"] = now
+
+        return results
+
+    except Exception as e:
+        print("Errore nel chiamare AniList:", e)
+
+        # se ho qualcosa in cache, uso quello
+        if _manga_cache["data"] is not None:
+            return _manga_cache["data"]
+
+        # altrimenti fallback statico
+        return [
+            {
+                "title": "Jujutsu Kaisen",
+                "chapter": "Cap. 252",
+                "cover": "https://via.placeholder.com/150x220?text=JJK",
+                "date": "Oggi"
+            }
+        ]
 
 
 @app.route("/api/home")
 def home():
-    # Ongoing e manhwa per ora sono ancora dummy
     ongoing = [
         {
             "title": "One Piece",
@@ -114,19 +151,7 @@ def home():
         }
     ]
 
-    try:
-        latest_manga = fetch_latest_manga(limit=6)
-    except Exception as e:
-        # Se AniList dà errore, non facciamo crashare tutto
-        print("Errore nel chiamare AniList:", e)
-        latest_manga = [
-            {
-                "title": "Jujutsu Kaisen",
-                "chapter": "Cap. 252",
-                "cover": "https://via.placeholder.com/150x220?text=JJK",
-                "date": "Oggi"
-            }
-        ]
+    latest_manga = fetch_latest_manga(limit=6)
 
     data = {
         "ongoing": ongoing,
