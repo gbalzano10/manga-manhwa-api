@@ -1,4 +1,4 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 import requests
 import time
@@ -26,10 +26,7 @@ def _anilist_request(query: str, variables: dict):
 
 
 def fetch_latest_manga(limit: int = 6):
-    """
-    Manga (generici) aggiornati di recente da AniList.
-    Usa una cache per evitare di superare il rate limit.
-    """
+    """Manga aggiornati di recente (tipo giapponesi ecc.)."""
     now = time.time()
 
     if (
@@ -47,14 +44,8 @@ def fetch_latest_manga(limit: int = 6):
           status_in: [RELEASING]
         ) {
           id
-          title {
-            romaji
-            english
-            native
-          }
-          coverImage {
-            large
-          }
+          title { romaji english native }
+          coverImage { large }
           chapters
           siteUrl
         }
@@ -116,11 +107,7 @@ def fetch_latest_manga(limit: int = 6):
 
 
 def fetch_latest_manhwa(limit: int = 6):
-    """
-    Manhwa (titoli coreani) da AniList.
-    Filtra per countryOfOrigin = KR.
-    Anche qui usiamo una cache.
-    """
+    """Manhwa (Corea, KR) aggiornati di recente."""
     now = time.time()
 
     if (
@@ -139,14 +126,8 @@ def fetch_latest_manhwa(limit: int = 6):
           status_in: [RELEASING]
         ) {
           id
-          title {
-            romaji
-            english
-            native
-          }
-          coverImage {
-            large
-          }
+          title { romaji english native }
+          coverImage { large }
           chapters
           siteUrl
         }
@@ -209,7 +190,7 @@ def fetch_latest_manhwa(limit: int = 6):
 
 @app.route("/api/home")
 def home():
-    # Ongoing per ora li lasciamo statici
+    # Ongoing statici per ora
     ongoing = [
         {
             "title": "One Piece",
@@ -233,6 +214,82 @@ def home():
     }
 
     return jsonify(data)
+
+
+@app.route("/api/search")
+def search():
+    """
+    Ricerca manga/manhwa per titolo.
+    URL: /api/search?q=parola
+    """
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify({"results": []})
+
+    query = """
+    query ($search: String, $page: Int, $perPage: Int) {
+      Page(page: $page, perPage: $perPage) {
+        media(
+          search: $search
+          type: MANGA
+          sort: POPULARITY_DESC
+        ) {
+          id
+          title { romaji english native }
+          coverImage { large }
+          chapters
+          countryOfOrigin
+          siteUrl
+        }
+      }
+    }
+    """
+
+    variables = {"search": q, "page": 1, "perPage": 12}
+
+    try:
+        json_data = _anilist_request(query, variables)
+        media_list = json_data["data"]["Page"]["media"]
+
+        results = []
+        for m in media_list:
+            title_info = m.get("title") or {}
+            title = (
+                title_info.get("romaji")
+                or title_info.get("english")
+                or title_info.get("native")
+                or "Senza titolo"
+            )
+
+            chapters = m.get("chapters")
+            if chapters:
+                chapter_label = f"Cap. {chapters}"
+            else:
+                chapter_label = "Capitoli in corso"
+
+            cover = (m.get("coverImage") or {}).get("large") or \
+                "https://via.placeholder.com/150x220?text=Manga"
+
+            country = m.get("countryOfOrigin")
+            # giusto per info: se è KR lo consideriamo manhwa
+            if country == "KR":
+                tag = "Manhwa"
+            else:
+                tag = "Manga"
+
+            results.append({
+                "title": title,
+                "chapter": chapter_label,
+                "cover": cover,
+                "date": tag,   # lo mostriamo come “Manga” / “Manhwa”
+                "url": m.get("siteUrl"),
+            })
+
+        return jsonify({"results": results})
+
+    except Exception as e:
+        print("Errore ricerca AniList:", e)
+        return jsonify({"results": []})
 
 
 if __name__ == "__main__":
